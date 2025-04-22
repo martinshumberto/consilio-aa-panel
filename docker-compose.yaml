@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:4.4
+    container_name: aapanel-mongodb
+    restart: always
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-strongpassword}
+    volumes:
+      - /mnt/data/mongodb:/data/db
+    networks:
+      - aapanel-net
+    ports:
+      - "127.0.0.1:27017:27017"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+    labels:
+      com.backup: "true"
+
+  redis:
+    image: redis:6-alpine
+    container_name: aapanel-redis
+    restart: always
+    command: redis-server --requirepass ${REDIS_PASSWORD:-strongpassword}
+    volumes:
+      - /mnt/data/redis:/data
+    networks:
+      - aapanel-net
+    ports:
+      - "127.0.0.1:6379:6379"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+    labels:
+      com.backup: "true"
+
+networks:
+  aapanel-net:
+    external: true 

@@ -1,0 +1,34 @@
+# Example rclone.conf file for S3 backups
+# Place this in /root/.config/rclone/rclone.conf or ~/.config/rclone/rclone.conf
+
+[s3backup]
+type = s3
+provider = AWS
+access_key_id = YOUR_ACCESS_KEY_ID
+secret_access_key = YOUR_SECRET_ACCESS_KEY
+region = us-east-1
+location_constraint = us-east-1
+acl = private
+
+# For MinIO/other S3-compatible storage:
+# type = s3
+# provider = Other
+# env_auth = false
+# access_key_id = YOUR_ACCESS_KEY
+# secret_access_key = YOUR_SECRET_KEY
+# endpoint = https://your-endpoint.com
+# acl = private
+
+# For Google Cloud Storage:
+# [gcloud]
+# type = google cloud storage
+# project_number = YOUR_PROJECT_NUMBER
+# service_account_file = /path/to/service-account-file.json
+# location = us-central1
+# storage_class = STANDARD
+
+# For Backblaze B2:
+# [b2backup]
+# type = b2
+# account = YOUR_ACCOUNT_ID
+# key = YOUR_APPLICATION_KEY 
