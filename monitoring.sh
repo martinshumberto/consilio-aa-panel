@@ -5,9 +5,49 @@ set -euo pipefail
 # =========================
 # MONITORING SETUP
 # =========================
+# Verify parameters or load from environment
 NETDATA_INSTALL_URL="https://my-netdata.io/kickstart.sh"
-TELEGRAM_BOT_TOKEN=${1:-""}
-TELEGRAM_CHAT_ID=${2:-""}
+
+# If parameters are provided, use them
+if [ "$#" -ge 1 ]; then
+  DISCORD_WEBHOOK_URL="$1"
+else
+  # Otherwise, check environment
+  if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
+    DISCORD_WEBHOOK_URL=""
+    echo "Warning: No Discord webhook URL provided. Alerts will be disabled."
+  fi
+fi
+
+if [ "$#" -ge 2 ]; then
+  DISCORD_ALERT_USERNAME="$2"
+else
+  # Check environment
+  if [ -z "${DISCORD_ALERT_USERNAME:-}" ]; then
+    echo "Error: DISCORD_ALERT_USERNAME not provided as parameter or environment variable."
+    exit 1
+  fi
+fi
+
+if [ "$#" -ge 3 ]; then
+  PANEL_DOMAIN="$3"
+else
+  # Check environment
+  if [ -z "${PANEL_DOMAIN:-}" ]; then
+    echo "Error: PANEL_DOMAIN not provided as parameter or environment variable."
+    exit 1
+  fi
+fi
+
+if [ "$#" -ge 4 ]; then
+  NETDATA_DOMAIN="$4"
+else
+  # Check environment
+  if [ -z "${NETDATA_DOMAIN:-}" ]; then
+    echo "Error: NETDATA_DOMAIN not provided as parameter or environment variable."
+    exit 1
+  fi
+fi
 
 # =========================
 # NETDATA INSTALLATION
@@ -38,8 +78,9 @@ cat > /opt/aapanel/health-check.sh << 'EOF'
 # Configuration
 LOG_FILE="/var/log/health-check.log"
 ERROR_COUNT=0
-TELEGRAM_BOT_TOKEN="BOT_TOKEN_HERE"
-TELEGRAM_CHAT_ID="CHAT_ID_HERE"
+DISCORD_WEBHOOK_URL="WEBHOOK_URL_HERE"
+DISCORD_ALERT_USERNAME="ALERT_USERNAME_HERE"
+PANEL_DOMAIN="PANEL_DOMAIN_HERE"
 
 # Create log file if it doesn't exist
 touch $LOG_FILE
@@ -49,16 +90,36 @@ log() {
 }
 
 send_alert() {
-  if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-    log "Sending Telegram alert: $1"
-    curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
-         -d chat_id="$TELEGRAM_CHAT_ID" \
-         -d text="🚨 Server Alert ($HOSTNAME): $1" \
-         -d parse_mode="Markdown" > /dev/null
+  if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+    log "Sending Discord alert: $1"
+    
+    # Format timestamp for Discord message
+    TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
+    
+    # Create JSON payload for Discord webhook
+    PAYLOAD=$(cat <<JSON
+{
+  "username": "$DISCORD_ALERT_USERNAME",
+  "content": "🚨 **Server Alert** ($PANEL_DOMAIN)",
+  "embeds": [{
+    "title": "Server Alert",
+    "description": "$1",
+    "color": 15158332,
+    "timestamp": "$TIMESTAMP",
+    "footer": {
+      "text": "ConsiliAAP Monitoring"
+    }
+  }]
+}
+JSON
+)
+    
+    # Send alert to Discord
+    curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL" > /dev/null
   else
-    log "Alert (no Telegram configured): $1"
+    log "Alert (no Discord configured): $1"
     # Send email alert as fallback
-    echo "$1" | mail -s "🚨 Server Alert: $HOSTNAME" root@localhost
+    echo "$1" | mail -s "🚨 Server Alert: $PANEL_DOMAIN" root@localhost
   fi
 }
 
@@ -231,13 +292,14 @@ EOF
 chmod +x /opt/aapanel/health-check.sh
 
 # Replace placeholders with actual values if provided
-if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-  sed -i "s/BOT_TOKEN_HERE/$TELEGRAM_BOT_TOKEN/g" /opt/aapanel/health-check.sh
-  sed -i "s/CHAT_ID_HERE/$TELEGRAM_CHAT_ID/g" /opt/aapanel/health-check.sh
-  echo "  ✅ Telegram notifications configured."
+if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+  sed -i "s|WEBHOOK_URL_HERE|$DISCORD_WEBHOOK_URL|g" /opt/aapanel/health-check.sh
+  sed -i "s|ALERT_USERNAME_HERE|$DISCORD_ALERT_USERNAME|g" /opt/aapanel/health-check.sh
+  sed -i "s|PANEL_DOMAIN_HERE|$PANEL_DOMAIN|g" /opt/aapanel/health-check.sh
+  echo "  ✅ Discord notifications configured."
 else
-  echo "  ℹ️ No Telegram credentials provided. Health checks will log locally."
-  echo "  ℹ️ To enable Telegram alerts, edit /opt/aapanel/health-check.sh"
+  echo "  ℹ️ No Discord webhook URL provided. Health checks will log locally."
+  echo "  ℹ️ To enable Discord alerts, edit /opt/aapanel/health-check.sh or set DISCORD_WEBHOOK_URL in .env"
 fi
 
 # =========================
@@ -283,6 +345,8 @@ cat > /etc/logrotate.d/backup << EOF
 EOF
 
 echo "✅ Monitoring setup complete!"
-echo "   - Netdata dashboard: http://$(hostname -I | awk '{print $1}'):19999"
+echo "   - Netdata dashboard: https://$NETDATA_DOMAIN"
+echo "   - Panel access: https://$PANEL_DOMAIN"
 echo "   - Health checks run every 15 minutes"
-echo "   - View health check logs at: /var/log/health-check.log" 
+echo "   - View health check logs at: /var/log/health-check.log"
+echo "   - Discord alerts will be sent to the configured webhook URL" 

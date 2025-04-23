@@ -3,6 +3,18 @@
 set -euo pipefail
 
 # =========================
+# LOAD ENVIRONMENT VARIABLES
+# =========================
+ENV_FILE=".env"
+if [ -f "$ENV_FILE" ]; then
+  echo "Loading environment variables from $ENV_FILE"
+  export $(grep -v '^#' $ENV_FILE | xargs)
+else
+  echo "Error: .env file not found. Please create one."
+  exit 1
+fi
+
+# =========================
 # ANSI COLOR CODES
 # =========================
 RED='\033[0;31m'
@@ -14,23 +26,96 @@ NC='\033[0m' # No Color
 # =========================
 # CONFIGURABLE VARIABLES
 # =========================
-AA_PANEL_PORT=2086
+# Verify required variables
+if [ -z "${PANEL_PORT:-}" ]; then
+  echo -e "${RED}❌ Error: PANEL_PORT not set in .env${NC}"
+  exit 1
+fi
+AA_PANEL_PORT=$PANEL_PORT
+
 AA_PANEL_INSTALL_SCRIPT="http://www.aapanel.com/script/install-ubuntu_6.0_en.sh"
-S3_REMOTE_NAME="s3backup"
-BACKUP_DIR="/mnt/data/backups"
-WEB_DIR="/mnt/data/wwwroot"
-MONGO_DIR="/mnt/data/mongodb"
-REDIS_DIR="/mnt/data/redis"
-POSTGRES_DIR="/mnt/data/postgres"
-DOCKER_VOLUMES_DIR="/mnt/data/docker-volumes"
-MAIL_DIR="/var/mail/vhosts"
+
+if [ -z "${WASABI_REMOTE_NAME:-}" ]; then
+  echo -e "${RED}❌ Error: WASABI_REMOTE_NAME not set in .env${NC}"
+  exit 1
+fi
+
+if [ -z "${WASABI_BUCKET_NAME:-}" ]; then
+  echo -e "${RED}❌ Error: WASABI_BUCKET_NAME not set in .env${NC}"
+  exit 1
+fi
+
+if [ -z "${WASABI_REGION:-}" ]; then
+  echo -e "${RED}❌ Error: WASABI_REGION not set in .env${NC}"
+  exit 1
+fi
+
+if [ -z "${WASABI_ACCESS_KEY:-}" ]; then
+  echo -e "${RED}❌ Error: WASABI_ACCESS_KEY not set in .env${NC}"
+  exit 1
+fi
+
+if [ -z "${WASABI_SECRET_KEY:-}" ]; then
+  echo -e "${RED}❌ Error: WASABI_SECRET_KEY not set in .env${NC}"
+  exit 1
+fi
+
+if [ -z "${BACKUP_DIR:-}" ]; then
+  echo -e "${RED}❌ Error: BACKUP_DIR not set in .env${NC}"
+  exit 1
+fi
+
+if [ -z "${WEB_DIR:-}" ]; then
+  echo -e "${RED}❌ Error: WEB_DIR not set in .env${NC}"
+  exit 1
+fi
+
+if [ -z "${MONGO_DIR:-}" ]; then
+  echo -e "${RED}❌ Error: MONGO_DIR not set in .env${NC}"
+  exit 1
+fi
+
+if [ -z "${REDIS_DIR:-}" ]; then
+  echo -e "${RED}❌ Error: REDIS_DIR not set in .env${NC}"
+  exit 1
+fi
+
+if [ -z "${POSTGRES_DIR:-}" ]; then
+  echo -e "${RED}❌ Error: POSTGRES_DIR not set in .env${NC}"
+  exit 1
+fi
+
+if [ -z "${DOCKER_VOLUMES_DIR:-}" ]; then
+  echo -e "${RED}❌ Error: DOCKER_VOLUMES_DIR not set in .env${NC}"
+  exit 1
+fi
+
+if [ -z "${MAIL_DIR:-}" ]; then
+  echo -e "${RED}❌ Error: MAIL_DIR not set in .env${NC}"
+  exit 1
+fi
+
 NETDATA_INSTALL_URL="https://my-netdata.io/kickstart.sh"
-SSL_EMAIL="admin@example.com"
-HOSTNAME_FQDN=$(hostname -f)
-# If hostname doesn't return FQDN, try to get domain from IP
-if [[ "$HOSTNAME_FQDN" == "$(hostname -s)" ]]; then
-    HOSTNAME_FQDN="$(hostname).example.com"
-    echo -e "${YELLOW}WARNING: Could not determine FQDN. Using $HOSTNAME_FQDN${NC}"
+
+if [ -z "${SSL_EMAIL:-}" ]; then
+  echo -e "${RED}❌ Error: SSL_EMAIL not set in .env${NC}"
+  exit 1
+fi
+
+if [ -z "${PANEL_DOMAIN:-}" ]; then
+  echo -e "${RED}❌ Error: PANEL_DOMAIN not set in .env${NC}"
+  exit 1
+fi
+HOSTNAME_FQDN=$PANEL_DOMAIN
+
+if [ -z "${NETDATA_DOMAIN:-}" ]; then
+  echo -e "${RED}❌ Error: NETDATA_DOMAIN not set in .env${NC}"
+  exit 1
+fi
+
+if [ -z "${EMAIL_DOMAIN:-}" ]; then
+  echo -e "${RED}❌ Error: EMAIL_DOMAIN not set in .env${NC}"
+  exit 1
 fi
 
 # Script directory
@@ -59,8 +144,10 @@ echo "Setup started at $(date)"
 # SYSTEM INFORMATION
 # =========================
 echo -e "${BLUE}🖥️ System Information:${NC}"
-echo "Hostname: $(hostname)"
-echo "FQDN: $HOSTNAME_FQDN"
+echo "System Hostname: $(hostname)"
+echo "Panel Domain: $HOSTNAME_FQDN"
+echo "Netdata Domain: $NETDATA_DOMAIN"
+echo "Email Domain: $EMAIL_DOMAIN"
 echo "IP Address: $(curl -s ifconfig.me)"
 echo "OS: $(lsb_release -ds)"
 echo "Kernel: $(uname -r)"
@@ -211,55 +298,9 @@ echo -e "${BLUE}📂 Copying support files...${NC}"
 if [ -f "$SCRIPT_DIR/docker-compose.yaml" ]; then
   cp "$SCRIPT_DIR/docker-compose.yaml" /opt/aapanel/docker-compose.yaml
 else
-  # Create docker-compose.yaml if doesn't exist
-  cat > /opt/aapanel/docker-compose.yaml << EOF
-version: '3.8'
-
-services:
-  mongodb:
-    image: mongo:4.4
-    container_name: aapanel-mongodb
-    restart: always
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=admin
-      - MONGO_INITDB_ROOT_PASSWORD=\${MONGO_PASSWORD:-strongpassword}
-    volumes:
-      - /mnt/data/mongodb:/data/db
-    networks:
-      - aapanel-net
-    ports:
-      - "127.0.0.1:27017:27017"
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100m"
-        max-file: "3"
-    labels:
-      com.backup: "true"
-
-  redis:
-    image: redis:6-alpine
-    container_name: aapanel-redis
-    restart: always
-    command: redis-server --requirepass \${REDIS_PASSWORD:-strongpassword}
-    volumes:
-      - /mnt/data/redis:/data
-    networks:
-      - aapanel-net
-    ports:
-      - "127.0.0.1:6379:6379"
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100m"
-        max-file: "3"
-    labels:
-      com.backup: "true"
-
-networks:
-  aapanel-net:
-    external: true
-EOF
+  # Error if docker-compose.yaml doesn't exist
+  echo -e "${RED}❌ docker-compose.yaml not found in $SCRIPT_DIR${NC}"
+  exit 1
 fi
 
 # Copy other scripts or create if they don't exist
@@ -275,28 +316,7 @@ done
 chmod +x /opt/aapanel/*.sh 2>/dev/null || true
 
 # Create rclone config example if not exists
-if [ ! -f "/opt/aapanel/rclone.conf.example" ]; then
-  cat > /opt/aapanel/rclone.conf.example << EOF
-# Example rclone.conf file for S3 backups
-# Place this in /root/.config/rclone/rclone.conf or ~/.config/rclone/rclone.conf
-
-[s3backup]
-type = s3
-provider = AWS
-access_key_id = YOUR_ACCESS_KEY_ID
-secret_access_key = YOUR_SECRET_ACCESS_KEY
-region = us-east-1
-location_constraint = us-east-1
 acl = private
-
-# For MinIO/other S3-compatible storage:
-# type = s3
-# provider = Other
-# env_auth = false
-# access_key_id = YOUR_ACCESS_KEY
-# secret_access_key = YOUR_SECRET_KEY
-# endpoint = https://your-endpoint.com
-# acl = private
 EOF
 fi
 
@@ -304,39 +324,46 @@ fi
 # CONFIGURE SSL FOR PANEL
 # =========================
 echo -e "${BLUE}🔒 Setting up SSL for aaPanel...${NC}"
-if [ -f "/www/server/panel/data/domain.conf" ]; then
-  PANEL_DOMAIN=$(cat /www/server/panel/data/domain.conf)
-  if [ -n "$PANEL_DOMAIN" ]; then
-    echo -e "${YELLOW}aaPanel domain is set to: $PANEL_DOMAIN${NC}"
+
+# Set panel domain if not already set
+if [ ! -f "/www/server/panel/data/domain.conf" ]; then
+  echo -e "${YELLOW}Setting panel domain to $HOSTNAME_FQDN...${NC}"
+  mkdir -p /www/server/panel/data/
+  echo "$HOSTNAME_FQDN" > /www/server/panel/data/domain.conf
+fi
+
+PANEL_DOMAIN=$(cat /www/server/panel/data/domain.conf)
+if [ -n "$PANEL_DOMAIN" ]; then
+  echo -e "${YELLOW}aaPanel domain is set to: $PANEL_DOMAIN${NC}"
+  
+  # Check if SSL is already enabled
+  if [ -f "/www/server/panel/data/ssl.pl" ]; then
+    echo -e "${GREEN}✅ SSL is already enabled for the panel${NC}"
+  else
+    echo -e "${YELLOW}Setting up Let's Encrypt SSL for aaPanel...${NC}"
     
-    # Check if SSL is already enabled
-    if [ -f "/www/server/panel/data/ssl.pl" ]; then
-      echo -e "${GREEN}✅ SSL is already enabled for the panel${NC}"
-    else
-      echo -e "${YELLOW}Setting up Let's Encrypt SSL for aaPanel...${NC}"
+    # Stop nginx before running certbot
+    systemctl stop nginx 2>/dev/null || true
+    
+    # Using certbot for SSL
+    certbot certonly --standalone --non-interactive --agree-tos \
+      --email $SSL_EMAIL -d $PANEL_DOMAIN
+    
+    # Configure SSL for panel
+    if [ -d "/etc/letsencrypt/live/$PANEL_DOMAIN" ]; then
+      # Create SSL directory
+      mkdir -p /www/server/panel/ssl
       
-      # Stop nginx before running certbot
-      systemctl stop nginx 2>/dev/null || true
+      # Copy certificates
+      cp /etc/letsencrypt/live/$PANEL_DOMAIN/cert.pem /www/server/panel/ssl/certificate.pem
+      cp /etc/letsencrypt/live/$PANEL_DOMAIN/privkey.pem /www/server/panel/ssl/privateKey.pem
       
-      # Using certbot for SSL
-      certbot certonly --standalone --non-interactive --agree-tos \
-        --email $SSL_EMAIL -d $PANEL_DOMAIN
+      # Enable SSL for panel
+      echo "True" > /www/server/panel/data/ssl.pl
       
-      # Configure SSL for panel
-      if [ -d "/etc/letsencrypt/live/$PANEL_DOMAIN" ]; then
-        # Create SSL directory
-        mkdir -p /www/server/panel/ssl
-        
-        # Copy certificates
-        cp /etc/letsencrypt/live/$PANEL_DOMAIN/cert.pem /www/server/panel/ssl/certificate.pem
-        cp /etc/letsencrypt/live/$PANEL_DOMAIN/privkey.pem /www/server/panel/ssl/privateKey.pem
-        
-        # Enable SSL for panel
-        echo "True" > /www/server/panel/data/ssl.pl
-        
-        # Create auto-renew hook
-        mkdir -p /etc/letsencrypt/renewal-hooks/post
-        cat > /etc/letsencrypt/renewal-hooks/post/aapanel-ssl.sh << EOF
+      # Create auto-renew hook
+      mkdir -p /etc/letsencrypt/renewal-hooks/post
+      cat > /etc/letsencrypt/renewal-hooks/post/aapanel-ssl.sh << EOF
 #!/bin/bash
 # Hook to update aaPanel SSL certificates after renewal
 
@@ -350,25 +377,106 @@ cp /etc/letsencrypt/live/$DOMAIN/privkey.pem $PANEL_SSL_DIR/privateKey.pem
 # Restart panel to apply new certificates
 bt restart panel
 EOF
-        chmod +x /etc/letsencrypt/renewal-hooks/post/aapanel-ssl.sh
-        
-        # Start nginx and restart panel
-        systemctl start nginx 2>/dev/null || true
-        bt restart panel
-        
-        echo -e "${GREEN}✅ SSL enabled for aaPanel with auto-renewal${NC}"
-      else
-        echo -e "${RED}❌ Failed to obtain SSL certificate for $PANEL_DOMAIN${NC}"
-        echo -e "${YELLOW}⚠️ Please ensure your domain points to this server's IP and ports 80/443 are open.${NC}"
-      fi
+      chmod +x /etc/letsencrypt/renewal-hooks/post/aapanel-ssl.sh
+      
+      # Start nginx and restart panel
+      systemctl start nginx 2>/dev/null || true
+      bt restart panel
+      
+      echo -e "${GREEN}✅ SSL enabled for aaPanel with auto-renewal${NC}"
+    else
+      echo -e "${RED}❌ Failed to obtain SSL certificate for $PANEL_DOMAIN${NC}"
+      echo -e "${YELLOW}⚠️ Please ensure your domain points to this server's IP and ports 80/443 are open.${NC}"
     fi
-  else
-    echo -e "${YELLOW}⚠️ No domain set for aaPanel. SSL setup skipped.${NC}"
-    echo -e "${YELLOW}⚠️ Set a domain in the panel and run this script again to enable SSL.${NC}"
-    echo -e "${YELLOW}⚠️ You can set a domain with: echo 'yourdomain.com' > /www/server/panel/data/domain.conf${NC}"
   fi
 else
-  echo -e "${YELLOW}⚠️ Domain configuration not found. SSL setup skipped.${NC}"
+  echo -e "${YELLOW}⚠️ No domain set for aaPanel. SSL setup skipped.${NC}"
+  echo -e "${YELLOW}⚠️ Set a domain in the panel and run this script again to enable SSL.${NC}"
+  echo -e "${YELLOW}⚠️ You can set a domain with: echo '$HOSTNAME_FQDN' > /www/server/panel/data/domain.conf${NC}"
+fi
+
+# =========================
+# CONFIGURE SSL FOR NETDATA
+# =========================
+echo -e "${BLUE}🔒 Setting up SSL for Netdata...${NC}"
+if [ -d "/etc/netdata" ]; then
+  # Check if SSL certificates already exist for the domain
+  if [ ! -d "/etc/letsencrypt/live/$NETDATA_DOMAIN" ]; then
+    # Stop nginx before running certbot
+    systemctl stop nginx 2>/dev/null || true
+    
+    # Get SSL certificates
+    certbot certonly --standalone --non-interactive --agree-tos \
+      --email $SSL_EMAIL -d $NETDATA_DOMAIN
+    
+    # Start nginx
+    systemctl start nginx 2>/dev/null || true
+  fi
+  
+  # Configure Netdata for SSL if certificates exist
+  if [ -d "/etc/letsencrypt/live/$NETDATA_DOMAIN" ]; then
+    # Create Nginx configuration for Netdata with SSL
+    cat > /etc/nginx/conf.d/netdata.conf << EOF
+server {
+    listen 80;
+    server_name $NETDATA_DOMAIN;
+    return 301 https://\$server_name\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name $NETDATA_DOMAIN;
+
+    ssl_certificate /etc/letsencrypt/live/$NETDATA_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$NETDATA_DOMAIN/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:50m;
+    ssl_stapling on;
+    ssl_stapling_verify on;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # Basic auth
+    auth_basic "Netdata Access";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
+    location / {
+        proxy_pass http://localhost:19999;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Server \$host;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header Host \$host;
+        proxy_http_version 1.1;
+        proxy_pass_request_headers on;
+        proxy_set_header Connection "keep-alive";
+        proxy_store off;
+    }
+}
+EOF
+
+    # Create a basic auth user for Netdata
+    if [ ! -f "/etc/nginx/.htpasswd" ]; then
+      apt install -y apache2-utils
+      NETDATA_PASSWORD=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9')
+      htpasswd -bc /etc/nginx/.htpasswd admin "$NETDATA_PASSWORD"
+      echo -e "${GREEN}✅ Created Netdata admin user with password: $NETDATA_PASSWORD${NC}"
+      echo -e "${YELLOW}Please save these credentials:${NC}"
+      echo -e "Netdata Username: admin"
+      echo -e "Netdata Password: $NETDATA_PASSWORD"
+    fi
+
+    # Reload Nginx to apply configuration
+    nginx -t && systemctl reload nginx
+    echo -e "${GREEN}✅ SSL for Netdata configured successfully${NC}"
+    echo -e "Access Netdata at: https://$NETDATA_DOMAIN"
+  else
+    echo -e "${RED}❌ Failed to obtain SSL certificate for $NETDATA_DOMAIN${NC}"
+    echo -e "${YELLOW}⚠️ Netdata will still be accessible at http://$(hostname -I | awk '{print $1}'):19999${NC}"
+  fi
+else
+  echo -e "${YELLOW}⚠️ Netdata not installed yet. SSL setup will be done after installation.${NC}"
 fi
 
 # =========================
@@ -737,7 +845,22 @@ if ! command -v rclone &> /dev/null; then
   curl https://rclone.org/install.sh | bash
 fi
 
-echo -e "${YELLOW}rclone example configuration file created at /opt/aapanel/rclone.conf.example${NC}"
+# Create Wasabi rclone config example
+cat > /opt/aapanel/rclone.conf.example << EOF
+# Example rclone.conf file for Wasabi backup
+# Place this in /root/.config/rclone/rclone.conf or ~/.config/rclone/rclone.conf
+
+[${WASABI_REMOTE_NAME}]
+type = s3
+provider = Wasabi
+access_key_id = ${WASABI_ACCESS_KEY}
+secret_access_key = ${WASABI_SECRET_KEY}
+region = ${WASABI_REGION}
+endpoint = s3.${WASABI_REGION}.wasabisys.com
+acl = private
+EOF
+
+echo -e "${YELLOW}Wasabi rclone example configuration file created at /opt/aapanel/rclone.conf.example${NC}"
 echo -e "${YELLOW}Configure rclone with: rclone config${NC}"
 
 # =========================
@@ -753,110 +876,61 @@ systemctl start docker
 docker network inspect aapanel-net &>/dev/null || docker network create aapanel-net
 echo -e "${GREEN}✅ Docker network 'aapanel-net' created${NC}"
 
-# Set environment variables for docker-compose
-DB_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n 1)
-REDIS_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n 1)
+# Generate random passwords for services if not set in .env
+if [ -z "${MONGODB_PASSWORD:-}" ]; then
+  MONGODB_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n 1)
+  echo "MONGODB_PASSWORD=\"$MONGODB_PASSWORD\"" >> .env
+  echo -e "${YELLOW}Generated MongoDB password and saved to .env${NC}"
+fi
 
-# Replace passwords in docker-compose.yaml
-sed -i "s/MONGO_PASSWORD:-strongpassword/MONGO_PASSWORD:-${DB_PASSWORD}/g" /opt/aapanel/docker-compose.yaml
-sed -i "s/REDIS_PASSWORD:-strongpassword/REDIS_PASSWORD:-${REDIS_PASSWORD}/g" /opt/aapanel/docker-compose.yaml
+if [ -z "${REDIS_PASSWORD:-}" ]; then
+  REDIS_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n 1)
+  echo "REDIS_PASSWORD=\"$REDIS_PASSWORD\"" >> .env
+  echo -e "${YELLOW}Generated Redis password and saved to .env${NC}"
+fi
+
+if [ -z "${POSTGRES_PASSWORD:-}" ]; then
+  POSTGRES_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n 1)
+  echo "POSTGRES_PASSWORD=\"$POSTGRES_PASSWORD\"" >> .env
+  echo -e "${YELLOW}Generated PostgreSQL password and saved to .env${NC}"
+fi
+
+# Verify other required database variables
+if [ -z "${MONGODB_USER:-}" ]; then
+  echo -e "${RED}❌ Error: MONGODB_USER not set in .env${NC}"
+  exit 1
+fi
+
+if [ -z "${POSTGRES_USER:-}" ]; then
+  echo -e "${RED}❌ Error: POSTGRES_USER not set in .env${NC}"
+  exit 1
+fi
+
+if [ -z "${POSTGRES_DB:-}" ]; then
+  echo -e "${RED}❌ Error: POSTGRES_DB not set in .env${NC}"
+  exit 1
+fi
+
+# Export the variables so docker-compose can use them
+export MONGODB_USER
+export MONGODB_PASSWORD
+export REDIS_PASSWORD
+export POSTGRES_USER
+export POSTGRES_PASSWORD
+export POSTGRES_DB
+export MONGO_DIR
+export REDIS_DIR
+export POSTGRES_DIR
 
 # Start containers
 cd /opt/aapanel
 docker-compose up -d
 
 echo -e "${GREEN}✅ Docker containers started with the following credentials:${NC}"
-echo -e "MongoDB Admin Password: ${DB_PASSWORD}"
+echo -e "MongoDB: ${MONGODB_USER} / ${MONGODB_PASSWORD}"
 echo -e "Redis Password: ${REDIS_PASSWORD}"
-echo -e "These credentials are saved in /opt/aapanel/docker-compose.yaml"
-
-# Create a script to manage dockerized services
-cat > /opt/aapanel/docker-manager.sh << 'EOF'
-#!/bin/bash
-
-# Docker service manager script
-set -e
-
-SERVICE=$1
-ACTION=$2
-
-# Display usage if parameters are missing
-if [ -z "$SERVICE" ] || [ -z "$ACTION" ]; then
-  echo "Usage: $0 SERVICE ACTION"
-  echo "Services: mongodb, redis, postgres, all"
-  echo "Actions: start, stop, restart, status, logs"
-  exit 1
-fi
-
-# Function to manage all services
-manage_all() {
-  case "$1" in
-    start)
-      cd /opt/aapanel && docker-compose up -d
-      ;;
-    stop)
-      cd /opt/aapanel && docker-compose down
-      ;;
-    restart)
-      cd /opt/aapanel && docker-compose restart
-      ;;
-    status)
-      docker-compose ps
-      ;;
-    logs)
-      docker-compose logs
-      ;;
-    *)
-      echo "Invalid action for all services"
-      exit 1
-      ;;
-  esac
-}
-
-# Function to manage specific service
-manage_service() {
-  local service=$1
-  local action=$2
-  
-  case "$action" in
-    start)
-      cd /opt/aapanel && docker-compose up -d $service
-      ;;
-    stop)
-      cd /opt/aapanel && docker-compose stop $service
-      ;;
-    restart)
-      cd /opt/aapanel && docker-compose restart $service
-      ;;
-    status)
-      docker-compose ps $service
-      ;;
-    logs)
-      docker-compose logs $service
-      ;;
-    *)
-      echo "Invalid action for $service"
-      exit 1
-      ;;
-  esac
-}
-
-# Main logic
-if [ "$SERVICE" = "all" ]; then
-  manage_all "$ACTION"
-else
-  # Check if service exists
-  if ! grep -q "$SERVICE:" /opt/aapanel/docker-compose.yaml; then
-    echo "Service $SERVICE not found in docker-compose.yaml"
-    exit 1
-  fi
-  manage_service "$SERVICE" "$ACTION"
-fi
-
-echo "Done."
-EOF
-
-chmod +x /opt/aapanel/docker-manager.sh
+echo -e "PostgreSQL: ${POSTGRES_USER} / ${POSTGRES_PASSWORD}"
+echo -e "These credentials are saved in your .env file"
 
 # =========================
 # POSTGRESQL SETUP
@@ -867,24 +941,29 @@ echo -e "${BLUE}🐘 Setting up PostgreSQL...${NC}"
 if [ ! -d "/www/server/panel/plugin/postgresql" ]; then
   echo -e "${YELLOW}PostgreSQL plugin not found in aaPanel. Setting up via Docker...${NC}"
   
-  # Add PostgreSQL to docker-compose.yaml
+  # Check if postgres service is already defined in the docker-compose file
   if ! grep -q "postgres:" /opt/aapanel/docker-compose.yaml; then
-    # Create a backup of current docker-compose.yaml
-    cp /opt/aapanel/docker-compose.yaml /opt/aapanel/docker-compose.yaml.bak
+    # Generate a password for PostgreSQL if not set in .env
+    if [ -z "${POSTGRES_PASSWORD:-}" ]; then
+      POSTGRES_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n 1)
+      echo "POSTGRES_PASSWORD=\"$POSTGRES_PASSWORD\"" >> .env
+      echo -e "${YELLOW}Generated PostgreSQL password and saved to .env${NC}"
+    fi
     
-    # Generate a password for PostgreSQL
-    PG_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n 1)
+    # Export the variables so docker-compose can use them
+    export POSTGRES_USER
+    export POSTGRES_PASSWORD
+    export POSTGRES_DB
+    export POSTGRES_DIR
     
-    # Insert PostgreSQL service before the last 'networks:' line
-    sed -i '/networks:/i \  postgres:\n    image: postgres:13-alpine\n    container_name: aapanel-postgres\n    restart: always\n    environment:\n      - POSTGRES_PASSWORD='${PG_PASSWORD}'\n      - POSTGRES_USER=postgres\n      - POSTGRES_DB=postgres\n    volumes:\n      - /mnt/data/postgres:/var/lib/postgresql/data\n    networks:\n      - aapanel-net\n    ports:\n      - "127.0.0.1:5432:5432"\n    logging:\n      driver: "json-file"\n      options:\n        max-size: "100m"\n        max-file: "3"\n    labels:\n      com.backup: "true"\n' /opt/aapanel/docker-compose.yaml
-    
-    # Restart all containers to include PostgreSQL
+    # Restart containers to include PostgreSQL
     cd /opt/aapanel
     docker-compose up -d
     
     echo -e "${GREEN}✅ PostgreSQL container started with the following credentials:${NC}"
-    echo -e "PostgreSQL Admin Password: ${PG_PASSWORD}"
-    echo -e "PostgreSQL User: postgres"
+    echo -e "PostgreSQL User: ${POSTGRES_USER}"
+    echo -e "PostgreSQL Password: ${POSTGRES_PASSWORD}"
+    echo -e "PostgreSQL Database: ${POSTGRES_DB}"
     echo -e "PostgreSQL Host: 127.0.0.1"
     echo -e "PostgreSQL Port: 5432"
   else
@@ -1001,14 +1080,27 @@ if command -v psql &> /dev/null; then
     # Try Docker PostgreSQL
     if docker ps | grep -q aapanel-postgres; then
       echo "  - Using Docker PostgreSQL"
-      PG_PASSWORD=$(grep -o 'POSTGRES_PASSWORD=[^"]*' /opt/aapanel/docker-compose.yaml | cut -d'=' -f2)
+      
+      # Check if required variables are set
+      if [ -z "${POSTGRES_USER:-}" ]; then
+        echo "  ⚠️ POSTGRES_USER not set in .env. Skipping PostgreSQL backup."
+        continue
+      fi
+      
+      if [ -z "${POSTGRES_PASSWORD:-}" ]; then
+        echo "  ⚠️ POSTGRES_PASSWORD not set in .env. Skipping PostgreSQL backup."
+        continue
+      fi
+      
+      PG_USER=$POSTGRES_USER
+      PG_PASSWORD=$POSTGRES_PASSWORD
       
       # Get all databases
-      docker exec -i aapanel-postgres psql -U postgres -c "SELECT datname FROM pg_database WHERE datistemplate = false AND datname != 'postgres';" -t | while read DB; do
+      docker exec -i aapanel-postgres psql -U $PG_USER -c "SELECT datname FROM pg_database WHERE datistemplate = false AND datname != 'postgres';" -t | while read DB; do
         DB=$(echo $DB | tr -d ' ')
         if [ -n "$DB" ]; then
           echo "  - Backing up PostgreSQL DB: $DB"
-          docker exec -i aapanel-postgres pg_dump -U postgres $DB | gzip > "${BACKUP_DIR}/postgres/${DB}_${DATE}.sql.gz"
+          docker exec -i aapanel-postgres pg_dump -U $PG_USER $DB | gzip > "${BACKUP_DIR}/postgres/${DB}_${DATE}.sql.gz"
         fi
       done
     else
@@ -1018,16 +1110,25 @@ if command -v psql &> /dev/null; then
 else
   if docker ps | grep -q aapanel-postgres; then
     echo "  - Using Docker PostgreSQL"
-    PG_PASSWORD=$(grep -o 'POSTGRES_PASSWORD=[^"]*' /opt/aapanel/docker-compose.yaml | cut -d'=' -f2)
     
-    # Get all databases
-    docker exec -i aapanel-postgres psql -U postgres -c "SELECT datname FROM pg_database WHERE datistemplate = false AND datname != 'postgres';" -t | while read DB; do
-      DB=$(echo $DB | tr -d ' ')
-      if [ -n "$DB" ]; then
-        echo "  - Backing up PostgreSQL DB: $DB"
-        docker exec -i aapanel-postgres pg_dump -U postgres $DB | gzip > "${BACKUP_DIR}/postgres/${DB}_${DATE}.sql.gz"
-      fi
-    done
+    # Check if required variables are set
+    if [ -z "${POSTGRES_USER:-}" ]; then
+      echo "  ⚠️ POSTGRES_USER not set in .env. Skipping PostgreSQL backup."
+    elif [ -z "${POSTGRES_PASSWORD:-}" ]; then
+      echo "  ⚠️ POSTGRES_PASSWORD not set in .env. Skipping PostgreSQL backup."
+    else
+      PG_USER=$POSTGRES_USER
+      PG_PASSWORD=$POSTGRES_PASSWORD
+      
+      # Get all databases
+      docker exec -i aapanel-postgres psql -U $PG_USER -c "SELECT datname FROM pg_database WHERE datistemplate = false AND datname != 'postgres';" -t | while read DB; do
+        DB=$(echo $DB | tr -d ' ')
+        if [ -n "$DB" ]; then
+          echo "  - Backing up PostgreSQL DB: $DB"
+          docker exec -i aapanel-postgres pg_dump -U $PG_USER $DB | gzip > "${BACKUP_DIR}/postgres/${DB}_${DATE}.sql.gz"
+        fi
+      done
+    fi
   else
     echo "  ⚠️ PostgreSQL not installed. Skipping PostgreSQL backups."
   fi
@@ -1038,24 +1139,29 @@ fi
 # =========================
 if command -v mongodump &> /dev/null && docker ps | grep -q aapanel-mongodb; then
   echo "Backing up MongoDB databases..."
-  # Get MongoDB password from environment or docker-compose
-  MONGO_PASSWORD=$(grep -o 'MONGO_PASSWORD:-[^}]*' /opt/aapanel/docker-compose.yaml | cut -d'-' -f2 | sed 's/}//')
-  if [ -z "$MONGO_PASSWORD" ]; then
-    MONGO_PASSWORD="strongpassword"
+  
+  # Check if required variables are set
+  if [ -z "${MONGODB_USER:-}" ]; then
+    echo "  ⚠️ MONGODB_USER not set in .env. Skipping MongoDB backup."
+  elif [ -z "${MONGODB_PASSWORD:-}" ]; then
+    echo "  ⚠️ MONGODB_PASSWORD not set in .env. Skipping MongoDB backup."
+  else
+    MONGO_USER=$MONGODB_USER
+    MONGO_PASSWORD=$MONGODB_PASSWORD
+    
+    MONGO_DUMP_DIR="${BACKUP_DIR}/mongodb/dump_${DATE}"
+    mkdir -p "$MONGO_DUMP_DIR"
+    
+    # Using mongodump to backup all databases
+    mongodump --host localhost --port 27017 --username $MONGO_USER --password $MONGO_PASSWORD --authenticationDatabase admin --out $MONGO_DUMP_DIR
+    
+    # Compress the dump
+    cd "${BACKUP_DIR}/mongodb"
+    tar -czf "mongodb_${DATE}.tar.gz" "dump_${DATE}"
+    rm -rf "dump_${DATE}"
+    
+    echo "  ✅ MongoDB backup completed"
   fi
-  
-  MONGO_DUMP_DIR="${BACKUP_DIR}/mongodb/dump_${DATE}"
-  mkdir -p "$MONGO_DUMP_DIR"
-  
-  # Using mongodump to backup all databases
-  mongodump --host localhost --port 27017 --username admin --password $MONGO_PASSWORD --authenticationDatabase admin --out $MONGO_DUMP_DIR
-  
-  # Compress the dump
-  cd "${BACKUP_DIR}/mongodb"
-  tar -czf "mongodb_${DATE}.tar.gz" "dump_${DATE}"
-  rm -rf "dump_${DATE}"
-  
-  echo "  ✅ MongoDB backup completed"
 else
   echo "  ⚠️ MongoDB not available. Skipping MongoDB backups."
 fi
@@ -1133,7 +1239,7 @@ if [[ "$SETUP_MAIL" =~ ^[Yy]$ ]]; then
   
   # Create mail server setup script if it doesn't exist
   if [ ! -f "/opt/aapanel/postfix-config.sh" ]; then
-    cat > /opt/aapanel/postfix-config.sh << 'EOF'
+    cat > /opt/aapanel/postfix-config.sh << EOF
 #!/bin/bash
 
 set -euo pipefail
@@ -1141,24 +1247,24 @@ set -euo pipefail
 # =========================
 # EMAIL SERVER CONFIGURATION
 # =========================
-DOMAIN=$(hostname -d)
-if [ -z "$DOMAIN" ]; then
+DOMAIN="${EMAIL_DOMAIN}"
+if [ -z "\$DOMAIN" ]; then
     echo "❌ Error: Unable to determine domain name."
     echo "Please set your hostname with a proper domain:"
     echo "  hostnamectl set-hostname mail.yourdomain.com"
     exit 1
 fi
 
-IP=$(curl -s ifconfig.me)
-EMAIL_PASSWORD=$(openssl rand -base64 12)
+IP=\$(curl -s ifconfig.me)
+EMAIL_PASSWORD=\$(openssl rand -base64 12)
 
 # =========================
 # INSTALL MAIL PACKAGES
 # =========================
 echo "🔧 Installing mail server packages..."
 apt update
-apt install -y postfix postfix-mysql dovecot-core dovecot-imapd dovecot-pop3d \
-  dovecot-lmtpd dovecot-mysql opendkim opendkim-tools spamassassin spamc \
+apt install -y postfix postfix-mysql dovecot-core dovecot-imapd dovecot-pop3d \\
+  dovecot-lmtpd dovecot-mysql opendkim opendkim-tools spamassassin spamc \\
   clamav clamav-daemon amavisd-new roundcube roundcube-mysql
 
 # =========================
@@ -1170,7 +1276,7 @@ echo "🔧 Configuring Postfix..."
 cp /etc/postfix/main.cf /etc/postfix/main.cf.bak
 
 # Configure main.cf
-cat > /etc/postfix/main.cf << EOF
+cat > /etc/postfix/main.cf << EOF2
 # Basic Settings
 smtpd_banner = \$myhostname ESMTP \$mail_name
 biff = no
@@ -1215,7 +1321,7 @@ smtpd_recipient_restrictions =
     reject_rbl_client bl.spamcop.net
 smtpd_relay_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination
 disable_vrfy_command = yes
-EOF
+EOF2
 
 # =========================
 # DOVECOT CONFIGURATION
@@ -1226,7 +1332,7 @@ echo "🔧 Configuring Dovecot..."
 cp /etc/dovecot/dovecot.conf /etc/dovecot/dovecot.conf.bak
 
 # Configure Dovecot
-cat > /etc/dovecot/dovecot.conf << EOF
+cat > /etc/dovecot/dovecot.conf << EOF2
 protocols = imap pop3 lmtp
 listen = *, ::
 
@@ -1263,7 +1369,7 @@ ssl_cert = </etc/ssl/certs/ssl-cert-snakeoil.pem
 ssl_key = </etc/ssl/private/ssl-cert-snakeoil.key
 ssl_min_protocol = TLSv1.2
 ssl_prefer_server_ciphers = yes
-EOF
+EOF2
 
 # =========================
 # OPENDKIM CONFIGURATION
@@ -1274,7 +1380,7 @@ echo "🔧 Configuring OpenDKIM..."
 mkdir -p /etc/opendkim/keys/$DOMAIN
 
 # Configure OpenDKIM
-cat > /etc/opendkim.conf << EOF
+cat > /etc/opendkim.conf << EOF2
 AutoRestart             Yes
 AutoRestartRate         10/1h
 Syslog                  yes
@@ -1290,7 +1396,7 @@ PidFile                 /var/run/opendkim/opendkim.pid
 SignatureAlgorithm      rsa-sha256
 UserID                  opendkim:opendkim
 Socket                  inet:8891@localhost
-EOF
+EOF2
 
 # Create files for OpenDKIM
 echo "$DOMAIN" > /etc/opendkim/TrustedHosts
@@ -1386,6 +1492,7 @@ echo ""
 echo "⚠️ IMPORTANT: Add the DNS records shown above to your DNS configuration"
 echo "   Test your email setup with: https://mail-tester.com" 
 EOF
+
     chmod +x /opt/aapanel/postfix-config.sh
   fi
   
@@ -1408,249 +1515,21 @@ echo -e "${GREEN}✅ Security hardening completed${NC}"
 
 # Setting up monitoring
 echo -e "${YELLOW}Setting up monitoring...${NC}"
-if [ ! -f "/opt/aapanel/monitoring.sh" ]; then
-  cat > /opt/aapanel/monitoring.sh << 'EOF'
-#!/bin/bash
 
-set -euo pipefail
-
-# =========================
-# MONITORING SETUP
-# =========================
-NETDATA_INSTALL_URL="https://my-netdata.io/kickstart.sh"
-TELEGRAM_BOT_TOKEN=${1:-""}
-TELEGRAM_CHAT_ID=${2:-""}
-
-# =========================
-# NETDATA INSTALLATION
-# =========================
-echo "🔧 Installing Netdata monitoring..."
-if [ ! -d "/opt/netdata" ] && [ ! -d "/usr/libexec/netdata" ]; then
-  bash <(curl -Ss $NETDATA_INSTALL_URL) --dont-wait --stable-channel --disable-telemetry
-  
-  # Configure Netdata retention (7 days)
-  if [ -f "/etc/netdata/netdata.conf" ]; then
-    sed -i 's/# history = 3996/history = 10080/g' /etc/netdata/netdata.conf
-  fi
-else
-  echo "  ✅ Netdata already installed."
+# Check for Discord webhook
+if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
+  DISCORD_WEBHOOK_URL=""
+  echo -e "${YELLOW}⚠️ DISCORD_WEBHOOK_URL not set in .env, Discord alerts will be disabled${NC}"
 fi
 
-# =========================
-# HEALTH CHECK SCRIPT
-# =========================
-echo "🔧 Creating health check script..."
-
-cat > /opt/aapanel/health-check.sh << 'EOL'
-#!/bin/bash
-
-# Health check script for aaPanel server
-# Checks critical services and sends alerts
-
-# Configuration
-LOG_FILE="/var/log/health-check.log"
-ERROR_COUNT=0
-TELEGRAM_BOT_TOKEN="BOT_TOKEN_HERE"
-TELEGRAM_CHAT_ID="CHAT_ID_HERE"
-
-# Create log file if it doesn't exist
-touch $LOG_FILE
-
-log() {
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a $LOG_FILE
-}
-
-send_alert() {
-  if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-    log "Sending Telegram alert: $1"
-    curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
-         -d chat_id="$TELEGRAM_CHAT_ID" \
-         -d text="🚨 Server Alert ($HOSTNAME): $1" \
-         -d parse_mode="Markdown" > /dev/null
-  else
-    log "Alert (no Telegram configured): $1"
-    # Send email alert as fallback
-    echo "$1" | mail -s "🚨 Server Alert: $HOSTNAME" root@localhost
-  fi
-}
-
-# Check system load
-check_load() {
-  log "Checking system load..."
-  LOAD=$(cat /proc/loadavg | awk '{print $1}')
-  CORES=$(nproc)
-  THRESHOLD=$(echo "$CORES * 1.5" | bc)
-  
-  if (( $(echo "$LOAD > $THRESHOLD" | bc -l) )); then
-    send_alert "High system load: $LOAD (threshold: $THRESHOLD)"
-    ERROR_COUNT=$((ERROR_COUNT + 1))
-  fi
-}
-
-# Check disk space
-check_disk() {
-  log "Checking disk space..."
-  DISK_USAGE=$(df -h / | grep -v Filesystem | awk '{print $5}' | tr -d '%')
-  
-  if [ "$DISK_USAGE" -gt 85 ]; then
-    send_alert "Low disk space: ${DISK_USAGE}% used on root filesystem"
-    ERROR_COUNT=$((ERROR_COUNT + 1))
-  fi
-  
-  # Check /mnt/data if it exists
-  if [ -d "/mnt/data" ]; then
-    DATA_USAGE=$(df -h /mnt/data | grep -v Filesystem | awk '{print $5}' | tr -d '%')
-    if [ "$DATA_USAGE" -gt 85 ]; then
-      send_alert "Low disk space: ${DATA_USAGE}% used on /mnt/data"
-      ERROR_COUNT=$((ERROR_COUNT + 1))
-    fi
-  fi
-}
-
-# Check aaPanel service
-check_aapanel() {
-  log "Checking aaPanel service..."
-  if ! curl -s --head --fail http://localhost:2086 >/dev/null; then
-    send_alert "aaPanel is not responding on port 2086"
-    ERROR_COUNT=$((ERROR_COUNT + 1))
-  fi
-}
-
-# Check Nginx/Apache service
-check_web() {
-  log "Checking web server..."
-  
-  # Check if Nginx is installed and expected to be running
-  if systemctl list-unit-files | grep -q nginx; then
-    if ! systemctl is-active --quiet nginx; then
-      send_alert "Nginx service is not running"
-      ERROR_COUNT=$((ERROR_COUNT + 1))
-    fi
-  fi
-  
-  # Check if Apache is installed and expected to be running
-  if systemctl list-unit-files | grep -q apache2; then
-    if ! systemctl is-active --quiet apache2; then
-      send_alert "Apache service is not running"
-      ERROR_COUNT=$((ERROR_COUNT + 1))
-    fi
-  fi
-}
-
-# Check database services
-check_databases() {
-  log "Checking database services..."
-  
-  # Check MySQL/MariaDB
-  if systemctl list-unit-files | grep -q -E 'mysql|mariadb'; then
-    if ! systemctl is-active --quiet mysql && ! systemctl is-active --quiet mariadb; then
-      send_alert "MySQL/MariaDB service is not running"
-      ERROR_COUNT=$((ERROR_COUNT + 1))
-    fi
-  fi
-  
-  # Check PostgreSQL
-  if systemctl list-unit-files | grep -q postgresql; then
-    if ! systemctl is-active --quiet postgresql; then
-      send_alert "PostgreSQL service is not running"
-      ERROR_COUNT=$((ERROR_COUNT + 1))
-    fi
-  fi
-  
-  # Check MongoDB
-  if docker ps --format '{{.Names}}' | grep -q mongodb; then
-    if ! docker exec -i $(docker ps -q --filter name=mongodb) mongosh --eval "db.stats()" &>/dev/null; then
-      send_alert "MongoDB container is not responding"
-      ERROR_COUNT=$((ERROR_COUNT + 1))
-    fi
-  fi
-}
-
-# Check mail services
-check_mail() {
-  log "Checking mail services..."
-  
-  # Check Postfix
-  if systemctl list-unit-files | grep -q postfix; then
-    if ! systemctl is-active --quiet postfix; then
-      send_alert "Postfix service is not running"
-      ERROR_COUNT=$((ERROR_COUNT + 1))
-    fi
-  fi
-  
-  # Check Dovecot
-  if systemctl list-unit-files | grep -q dovecot; then
-    if ! systemctl is-active --quiet dovecot; then
-      send_alert "Dovecot service is not running"
-      ERROR_COUNT=$((ERROR_COUNT + 1))
-    fi
-  fi
-}
-
-# Check for failed backups
-check_backups() {
-  log "Checking backup status..."
-  if [ -f "/var/log/backup-aapanel.log" ]; then
-    if grep -i "error\|failed\|fail" /var/log/backup-aapanel.log | grep -q "$(date +%Y-%m-%d)"; then
-      send_alert "Backup errors detected in today's backup log"
-      ERROR_COUNT=$((ERROR_COUNT + 1))
-    fi
-  fi
-}
-
-# Check for security issues
-check_security() {
-  log "Checking security..."
-  
-  # Check for failed SSH attempts
-  FAILED_SSH=$(grep -i "Failed password" /var/log/auth.log | grep "$(date +%Y-%m-%d)" | wc -l)
-  if [ "$FAILED_SSH" -gt 20 ]; then
-    send_alert "High number of failed SSH login attempts: $FAILED_SSH"
-    ERROR_COUNT=$((ERROR_COUNT + 1))
-  fi
-  
-  # Check for banned IPs
-  if command -v fail2ban-client &> /dev/null; then
-    BANNED_IPS=$(fail2ban-client status | grep "Jail list" | sed 's/^.*Jail list:\s*//' | tr ',' ' ' | wc -w)
-    if [ "$BANNED_IPS" -gt 10 ]; then
-      send_alert "High number of banned IPs: $BANNED_IPS"
-      ERROR_COUNT=$((ERROR_COUNT + 1))
-    fi
-  fi
-}
-
-# Run all checks
-echo "==========================" >> $LOG_FILE
-log "Starting health check"
-check_load
-check_disk
-check_aapanel
-check_web
-check_databases
-check_mail
-check_backups
-check_security
-
-# Summary
-if [ "$ERROR_COUNT" -eq 0 ]; then
-  log "Health check completed successfully. No issues found."
-else
-  log "Health check completed with $ERROR_COUNT errors."
+if [ -z "${DISCORD_ALERT_USERNAME:-}" ]; then
+  echo -e "${RED}❌ Error: DISCORD_ALERT_USERNAME not set in .env${NC}"
+  exit 1
 fi
-EOL
 
-# Make the script executable
-chmod +x /opt/aapanel/health-check.sh
-
-# Replace placeholders with actual values if provided
-if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-  sed -i "s/BOT_TOKEN_HERE/$TELEGRAM_BOT_TOKEN/g" /opt/aapanel/health-check.sh
-  sed -i "s/CHAT_ID_HERE/$TELEGRAM_CHAT_ID/g" /opt/aapanel/health-check.sh
-  echo "  ✅ Telegram notifications configured."
-else
-  echo "  ℹ️ No Telegram credentials provided. Health checks will log locally."
-  echo "  ℹ️ To enable Telegram alerts, edit /opt/aapanel/health-check.sh"
-fi
+# Executar o script de monitoramento com as credenciais do Discord e configuração de domínio
+bash /opt/aapanel/monitoring.sh "$DISCORD_WEBHOOK_URL" "$DISCORD_ALERT_USERNAME" "$HOSTNAME_FQDN" "$NETDATA_DOMAIN"
+echo -e "${GREEN}✅ Monitoring configured with Discord notifications${NC}"
 
 # =========================
 # SET UP HEALTH CHECK CRON
@@ -1716,13 +1595,6 @@ cat > /etc/logrotate.d/aapanel << 'EOF'
 }
 EOF
 echo "  ✅ Log rotation configured."
-EOF
-chmod +x /opt/aapanel/monitoring.sh
-fi
-
-# Run the monitoring script
-bash /opt/aapanel/monitoring.sh
-echo -e "${GREEN}✅ Monitoring setup completed${NC}"
 
 # =========================
 # ADDITIONAL SECURITY ADVICE
@@ -1747,14 +1619,24 @@ set -euo pipefail
 
 # WordPress Quick Setup Script for aaPanel
 DOMAIN=$1
-DB_NAME=${2:-"wp_$(date +%s | sha256sum | base64 | head -c 8)"}
-DB_USER=${3:-"wpuser_$(date +%s | sha256sum | base64 | head -c 8)"}
-DB_PASS=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9')
+DB_NAME=${2:-""}
+DB_USER=${3:-""}
 
 if [ -z "$DOMAIN" ]; then
   echo "Usage: $0 domain.com [db_name] [db_user]"
   exit 1
 fi
+
+# Generate database names if not provided
+if [ -z "$DB_NAME" ]; then
+  DB_NAME="wp_$(date +%s | sha256sum | base64 | head -c 8)"
+fi
+
+if [ -z "$DB_USER" ]; then
+  DB_USER="wpuser_$(date +%s | sha256sum | base64 | head -c 8)"
+fi
+
+DB_PASS=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9')
 
 # Check if domain directory exists
 SITE_DIR="/mnt/data/wwwroot/$DOMAIN"
@@ -1861,8 +1743,8 @@ echo -e "Usage: bash /opt/aapanel/wordpress-setup.sh yourdomain.com"
 echo -e "${BLUE}==========================${NC}"
 echo -e "${GREEN}✅ aaPanel Setup Complete!${NC}"
 echo -e "${BLUE}==========================${NC}"
-echo -e "Access aaPanel at: http://$(hostname -I | awk '{print $1}'):$AA_PANEL_PORT"
-echo -e "Netdata dashboard: http://$(hostname -I | awk '{print $1}'):19999"
+echo -e "Access aaPanel at: https://$HOSTNAME_FQDN (port $AA_PANEL_PORT)"
+echo -e "Access Netdata at: https://$NETDATA_DOMAIN"
 echo -e ""
 echo -e "${YELLOW}Important files and directories:${NC}"
 echo -e "  Web root: $WEB_DIR"
@@ -1877,6 +1759,9 @@ echo -e "  Redis password: $REDIS_PASSWORD"
 if [ -n "${PG_PASSWORD:-}" ]; then
   echo -e "  PostgreSQL: postgres / $PG_PASSWORD"
 fi
+if [ -n "${NETDATA_PASSWORD:-}" ]; then
+  echo -e "  Netdata: admin / $NETDATA_PASSWORD"
+fi
 echo -e ""
 echo -e "${YELLOW}Available scripts:${NC}"
 echo -e "  WordPress setup: /opt/aapanel/wordpress-setup.sh yourdomain.com"
@@ -1888,7 +1773,7 @@ echo -e "1. Access the aaPanel and change the default password"
 echo -e "2. Install additional software through the panel (MySQL, PostgreSQL, etc.)"
 echo -e "3. Configure rclone for remote backups: rclone config"
 echo -e "4. Create a non-root user for administration"
-echo -e "5. Check all services are running properly with: netdata dashboard"
+echo -e "5. Check all services are running properly with Netdata"
 echo -e "6. Set up websites with WordPress or other applications"
 echo -e ""
 echo -e "Setup completed at $(date)"

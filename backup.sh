@@ -6,12 +6,39 @@ set -euo pipefail
 # BACKUP CONFIGURATION
 # =========================
 DATE=$(date +%Y-%m-%d_%H-%M-%S)
-BACKUP_DIR="/mnt/data/backups"
-WEB_DIR="/mnt/data/wwwroot"
+
+# Load environment variables from .env if available
+ENV_FILE=".env"
+if [ -f "$ENV_FILE" ]; then
+  echo "Loading environment variables from $ENV_FILE"
+  export $(grep -v '^#' $ENV_FILE | xargs)
+else
+  echo "Error: .env file not found. Please create one."
+  exit 1
+fi
+
+# Check for required variables
+if [ -z "${BACKUP_DIR:-}" ]; then
+  echo "Error: BACKUP_DIR not set in .env. Cannot proceed with backup."
+  exit 1
+fi
+
+if [ -z "${WEB_DIR:-}" ]; then
+  echo "Error: WEB_DIR not set in .env. Cannot proceed with backup."
+  exit 1
+fi
+
+if [ -z "${WASABI_REMOTE_NAME:-}" ]; then
+  echo "Error: WASABI_REMOTE_NAME not set in .env. Wasabi backup will be skipped."
+fi
+
+if [ -z "${WASABI_BUCKET_NAME:-}" ]; then
+  echo "Error: WASABI_BUCKET_NAME not set in .env. Wasabi backup will be skipped."
+fi
+
 PANEL_DIR="/www/server/panel"
-MAIL_DIR="/var/mail"
-S3_REMOTE_NAME="s3backup"
-RETENTION_DAYS=7
+MAIL_DIR=${MAIL_DIR:-"/var/mail"}
+RETENTION_DAYS=${RETENTION_DAYS:-7}
 
 # Ensure backup directory exists
 mkdir -p "${BACKUP_DIR}"
@@ -69,10 +96,55 @@ if command -v psql &> /dev/null; then
     done
     unset PGPASSWORD
   else
-    echo "  ⚠️ PostgreSQL credentials not found. Skipping PostgreSQL backups."
+    # Try Docker PostgreSQL
+    if docker ps | grep -q aapanel-postgres; then
+      echo "  - Using Docker PostgreSQL"
+      
+      # Check if required variables are set
+      if [ -z "${POSTGRES_USER:-}" ]; then
+        echo "  ⚠️ POSTGRES_USER not set in .env. Skipping PostgreSQL backup."
+        continue
+      fi
+      
+      if [ -z "${POSTGRES_PASSWORD:-}" ]; then
+        echo "  ⚠️ POSTGRES_PASSWORD not set in .env. Skipping PostgreSQL backup."
+        continue
+      fi
+      
+      # Get all databases
+      docker exec -i aapanel-postgres psql -U $POSTGRES_USER -c "SELECT datname FROM pg_database WHERE datistemplate = false AND datname != 'postgres';" -t | while read DB; do
+        DB=$(echo $DB | tr -d ' ')
+        if [ -n "$DB" ]; then
+          echo "  - Backing up PostgreSQL DB: $DB"
+          docker exec -i aapanel-postgres pg_dump -U $POSTGRES_USER $DB | gzip > "${BACKUP_DIR}/postgres/${DB}_${DATE}.sql.gz"
+        fi
+      done
+    else
+      echo "  ⚠️ PostgreSQL credentials not found. Skipping PostgreSQL backups."
+    fi
   fi
 else
-  echo "  ⚠️ PostgreSQL not installed. Skipping PostgreSQL backups."
+  if docker ps | grep -q aapanel-postgres; then
+    echo "  - Using Docker PostgreSQL"
+    
+    # Check if required variables are set
+    if [ -z "${POSTGRES_USER:-}" ]; then
+      echo "  ⚠️ POSTGRES_USER not set in .env. Skipping PostgreSQL backup."
+    elif [ -z "${POSTGRES_PASSWORD:-}" ]; then
+      echo "  ⚠️ POSTGRES_PASSWORD not set in .env. Skipping PostgreSQL backup."
+    else
+      # Get all databases
+      docker exec -i aapanel-postgres psql -U $POSTGRES_USER -c "SELECT datname FROM pg_database WHERE datistemplate = false AND datname != 'postgres';" -t | while read DB; do
+        DB=$(echo $DB | tr -d ' ')
+        if [ -n "$DB" ]; then
+          echo "  - Backing up PostgreSQL DB: $DB"
+          docker exec -i aapanel-postgres pg_dump -U $POSTGRES_USER $DB | gzip > "${BACKUP_DIR}/postgres/${DB}_${DATE}.sql.gz"
+        fi
+      done
+    fi
+  else
+    echo "  ⚠️ PostgreSQL not installed. Skipping PostgreSQL backups."
+  fi
 fi
 
 # =========================
@@ -80,24 +152,26 @@ fi
 # =========================
 if command -v mongodump &> /dev/null && docker ps | grep -q aapanel-mongodb; then
   echo "Backing up MongoDB databases..."
-  # Get MongoDB password from environment or docker-compose
-  MONGO_PASSWORD=$(grep -o 'MONGO_PASSWORD:-[^}]*' /opt/aapanel/docker-compose.yaml | cut -d'-' -f2 | sed 's/}//')
-  if [ -z "$MONGO_PASSWORD" ]; then
-    MONGO_PASSWORD="strongpassword"
+  
+  # Check if required variables are set
+  if [ -z "${MONGODB_USER:-}" ]; then
+    echo "  ⚠️ MONGODB_USER not set in .env. Skipping MongoDB backup."
+  elif [ -z "${MONGODB_PASSWORD:-}" ]; then
+    echo "  ⚠️ MONGODB_PASSWORD not set in .env. Skipping MongoDB backup."
+  else
+    MONGO_DUMP_DIR="${BACKUP_DIR}/mongodb/dump_${DATE}"
+    mkdir -p "$MONGO_DUMP_DIR"
+    
+    # Using mongodump to backup all databases
+    mongodump --host localhost --port 27017 --username $MONGODB_USER --password $MONGODB_PASSWORD --authenticationDatabase admin --out $MONGO_DUMP_DIR
+    
+    # Compress the dump
+    cd "${BACKUP_DIR}/mongodb"
+    tar -czf "mongodb_${DATE}.tar.gz" "dump_${DATE}"
+    rm -rf "dump_${DATE}"
+    
+    echo "  ✅ MongoDB backup completed"
   fi
-  
-  MONGO_DUMP_DIR="${BACKUP_DIR}/mongodb/dump_${DATE}"
-  mkdir -p "$MONGO_DUMP_DIR"
-  
-  # Using mongodump to backup all databases
-  mongodump --host localhost --port 27017 --username admin --password $MONGO_PASSWORD --authenticationDatabase admin --out $MONGO_DUMP_DIR
-  
-  # Compress the dump
-  cd "${BACKUP_DIR}/mongodb"
-  tar -czf "mongodb_${DATE}.tar.gz" "dump_${DATE}"
-  rm -rf "dump_${DATE}"
-  
-  echo "  ✅ MongoDB backup completed"
 else
   echo "  ⚠️ MongoDB not available. Skipping MongoDB backups."
 fi
@@ -138,16 +212,17 @@ else
 fi
 
 # =========================
-# S3 SYNC
+# WASABI CLOUD SYNC
 # =========================
-echo "Syncing backups to S3..."
-if command -v rclone &> /dev/null && rclone listremotes | grep -q "$S3_REMOTE_NAME:"; then
-  rclone sync "${BACKUP_DIR}" "${S3_REMOTE_NAME}:aapanel-backups/${HOSTNAME}" \
+echo "Syncing backups to Wasabi Cloud Storage..."
+if command -v rclone &> /dev/null && rclone listremotes | grep -q "${WASABI_REMOTE_NAME}:"; then
+  rclone sync "${BACKUP_DIR}" "${WASABI_REMOTE_NAME}:${WASABI_BUCKET_NAME}/${HOSTNAME}" \
     --progress --stats-one-line --stats 15s
-  echo "  ✅ S3 sync completed"
+  echo "  ✅ Wasabi Cloud sync completed"
 else
-  echo "  ⚠️ Rclone not configured with $S3_REMOTE_NAME remote. Skipping S3 sync."
+  echo "  ⚠️ Rclone not configured with ${WASABI_REMOTE_NAME} remote. Skipping Wasabi Cloud sync."
   echo "      Configure with: rclone config"
+  echo "      Use the Wasabi provider with endpoint s3.${WASABI_REGION:-eu-central-1}.wasabisys.com"
 fi
 
 # =========================
